@@ -1,0 +1,14 @@
+[package]
+name = "flycraft"
+version = "0.1.0"
+edition = "2021"
+authors = ["FlyCraft Contributors"]
+description = "A native-Rust leaky integrate-and-fire fly-brain engine — reproducing the Drosophila whole-brain LIF model for eventually flying a drone"
+license = "MIT"
+readme = "README.md"
+
+# Milestone 1 is deliberately dependency-free: the LIF engine, sparse synapses,
+# delay buffer, and Poisson input (hand-rolled SplitMix64 PRNG) use only std.
+[dependencies]
+
+[dev-dependencies]
