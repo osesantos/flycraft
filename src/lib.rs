@@ -9,13 +9,18 @@
 //!
 //! ## Milestone 1 — the LIF engine
 //!
-//! This crate currently contains [`snn`]: a faithful, deterministic Rust port of
+//! This crate contains [`snn`]: a faithful, deterministic Rust port of
 //! the Shiu et al. LIF neuron model used by `fly-brain`
 //! (`code/paper-phil-drosophila/model.py`). M1 proves the engine is
 //! **numerically correct** against that model's source equations on small
 //! known-answer networks — no drone, no real-time, no Python.
 //!
-//! Later milestones load the full FlyWire connectome (~138k neurons, ~5M
-//! synapses), then wire the network's descending-neuron output to a drone.
+//! ## Milestone 2 — the connectome loader
+//!
+//! [`connectome`] loads the real FlyWire v783 connectome (138,639 neurons,
+//! 15,091,983 synapses) shipped in `data/` into the M1 engine and reproduces
+//! full-network experiments (sugar, P9) validated against fly-brain's reference
+//! aggregates.
 
+pub mod connectome;
 pub mod snn;

@@ -33,3 +33,6 @@ go.work.sum
 
 # Rust build artifacts
 /target
+
+# FlyWire v783 dataset (large; see README for provenance)
+/data/

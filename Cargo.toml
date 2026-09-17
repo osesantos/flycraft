@@ -9,6 +9,8 @@ readme = "README.md"
 
 # Milestone 1 is deliberately dependency-free: the LIF engine, sparse synapses,
 # delay buffer, and Poisson input (hand-rolled SplitMix64 PRNG) use only std.
+# Milestone 2 adds the arrow-rs family (parquet + arrow) — the sole dependency of
+# the connectome loader, to read the FlyWire v783 connectivity parquet natively.
 [dependencies]
-
-[dev-dependencies]
+parquet = "60.0.0"
+arrow = "60.0.0"

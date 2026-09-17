@@ -4,19 +4,24 @@
 //! ## Per-step ordering (replicating Brian2)
 //!
 //! For step `s`:
-//! 1. **Deliver** synaptic events scheduled for `s`: add each pending increment
-//!    to the target neuron's `g` (these came from spikes `t_dly` ago).
-//! 2. **Poisson input**: add `w_syn·f_poi` to `v` of each excited neuron that
-//!    drew an event this step.
-//! 3. **Integrate + threshold**: advance every neuron by the exact linear update;
-//!    a neuron with `v > v_th` spikes (→ `v_rst`, `g = 0`, refractory).
-//! 4. **Fan out** each spike: schedule its outgoing synapses for delivery at
+//! 1. **Integrate + threshold + reset**: advance every neuron by the exact
+//!    linear update; a neuron with `v > v_th` spikes (→ `v_rst`, `g = 0`,
+//!    refractory) and fans out its outgoing synapses for delivery at
 //!    `s + delay_steps`.
-//! 5. Clear slot `s`; advance to `s + 1`.
+//! 2. **Deliver** synaptic events scheduled for `s`: add each pending increment
+//!    to the target neuron's `g` (these came from spikes `delay_steps` ago).
+//! 3. **Poisson input**: add `w_syn·f_poi` to `v` of each excited neuron that
+//!    drew an event this step.
+//! 4. Clear slot `s`; advance to `s + 1`.
 //!
-//! This makes a spike affect its targets exactly `t_dly` later, and lets the
-//! network be **built once and stepped repeatedly** — the property that makes a
-//! real-time control loop possible later.
+//! Delivery deliberately runs *after* the state update, and is skipped for any
+//! neuron that spiked or is currently refractory this step. That matches Brian2,
+//! where a delivered event on a spike step is discarded by the reset and `g` is
+//! frozen for the whole refractory period. Combined with delivery landing one
+//! step after the state update, a spike affects its targets `t_dly` later.
+//!
+//! This lets the network be **built once and stepped repeatedly** — the property
+//! that makes a real-time control loop possible later.
 
 use crate::snn::neuron::Neuron;
 use crate::snn::params::LifParams;
@@ -109,41 +114,50 @@ impl Network {
     pub fn step(&mut self) -> usize {
         let s = self.step_idx;
 
-        // 1. Deliver synaptic events scheduled for this step (add to g).
+        // 1. Integrate + threshold + reset; collect spikers.
+        let mut spiked_flags = vec![false; self.neurons.len()];
+        let mut spikers: Vec<usize> = Vec::new();
+        for (i, flag) in spiked_flags.iter_mut().enumerate() {
+            if self.neurons[i].step(&self.params, s) {
+                *flag = true;
+                spikers.push(i);
+            }
+        }
+        for &i in &spikers {
+            self.synapses.fan_out_spike(i, s);
+            if self.recording {
+                self.spikes.push(SpikeEvent {
+                    step: s,
+                    neuron: i as u32,
+                });
+            }
+        }
+        let spiked = spikers.len();
+
+        // 2. Deliver synaptic events scheduled for this step to neurons that
+        //    are neither spiking nor refractory. The reference discards events
+        //    on a spike step and freezes `g` throughout the refractory period.
         {
             let slot = self.synapses.delivery_slot(s);
             for (i, &dg) in slot.iter().enumerate() {
-                if dg != 0.0 {
+                if dg != 0.0 && !spiked_flags[i] && !self.neurons[i].is_refractory(s) {
                     self.neurons[i].add_g(dg);
                 }
             }
         }
+        self.synapses.clear_delivery_slot(s);
 
-        // 2. Poisson input (add to v). Applied via a closure to keep the RNG
-        //    draw order deterministic and avoid borrowing conflicts.
+        // 3. Poisson input (add to v), likewise discarded on a spiking or
+        //    refractory step.
         for input in &mut self.inputs {
             let neurons = &mut self.neurons;
-            input.step(|i, dv| neurons[i].add_v(dv));
-        }
-
-        // 3. Integrate + threshold; collect spikers.
-        //    4. Fan out spikes (scheduled for s + delay_steps).
-        let mut spiked = 0usize;
-        for i in 0..self.neurons.len() {
-            if self.neurons[i].step(&self.params, s) {
-                spiked += 1;
-                self.synapses.fan_out_spike(i, s);
-                if self.recording {
-                    self.spikes.push(SpikeEvent {
-                        step: s,
-                        neuron: i as u32,
-                    });
+            input.step(|i, dv| {
+                if !spiked_flags[i] && !neurons[i].is_refractory(s) {
+                    neurons[i].add_v(dv);
                 }
-            }
+            });
         }
 
-        // 5. Clear this step's delivery slot; advance.
-        self.synapses.clear_delivery_slot(s);
         self.step_idx += 1;
 
         spiked
