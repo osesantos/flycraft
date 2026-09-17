@@ -15,9 +15,10 @@
 //!   (`flyid2i = {j: i for i, j in enumerate(df_comp.index)}`).
 //! - Edges and weights match `model.py:160-183`
 //!   (`syn.connect(i=idx_pre, j=idx_post); syn.w = ExcXConn · w_syn`).
-//! - Experiment flavour matches `benchmark.py:57-99`
-//!   (`neu_exc`, `stim_rate` → `r_poi`). Excitatory neurons get Poisson on `v`
-//!   at `w_syn·f_poi`, refractory disabled — already honoured by `Network`.
+//! - Experiment flavour matches `benchmark.py:57-99` and `model.py:61-127`:
+//!   `neu_exc` at `r_poi`, `neu_exc2` at `r_poi2`, `neu_slnc` silenced. Excitatory
+//!   neurons get Poisson on `v` at `w_syn·f_poi` with refractory disabled;
+//!   silenced neurons keep spiking but have every outgoing weight zeroed.
 
 mod completeness;
 mod connectivity;
@@ -25,7 +26,7 @@ mod experiment;
 
 pub use completeness::Completeness;
 pub use connectivity::Connectivity;
-pub use experiment::{Experiment, P9, SUGAR};
+pub use experiment::{Experiment, P9, SUGAR, SUGAR_AND_P9};
 
 use crate::snn::network::Network;
 use crate::snn::params::LifParams;
@@ -94,6 +95,27 @@ impl Connectome {
         &self.connectivity
     }
 
+    /// Resolve experiment flyids to local neuron indices, erroring if any flyid
+    /// is missing from the roster.
+    fn resolve_indices(
+        &self,
+        flyids: &[u64],
+        experiment_name: &str,
+    ) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+        flyids
+            .iter()
+            .map(|flyid| {
+                self.completeness.idx_of(*flyid).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("flyid {flyid} (experiment {experiment_name}) not in roster"),
+                    )
+                    .into()
+                })
+            })
+            .collect()
+    }
+
     /// Build a full, at-rest [`Network`] for `experiment`, driven by seeded
     /// Poisson input. Same seed ⇒ identical simulation.
     pub fn network(
@@ -102,35 +124,83 @@ impl Connectome {
         seed: u64,
     ) -> Result<Network, Box<dyn std::error::Error>> {
         let n = self.neuron_count();
+        let silenced = self.resolve_indices(experiment.silenced_flyids, experiment.name)?;
+        let silenced_weights;
+        let weight: &[f64] = if silenced.is_empty() {
+            self.connectivity.weight()
+        } else {
+            silenced_weights = silence_outgoing(
+                self.connectivity.pre(),
+                self.connectivity.weight(),
+                &silenced,
+                n,
+            );
+            &silenced_weights
+        };
         let synapses = Synapses::from_edges(
             n,
             self.connectivity.pre(),
             self.connectivity.post(),
-            self.connectivity.weight(),
+            weight,
             self.params.delay_steps(),
         );
         let mut net = Network::with_params(self.params, n, synapses);
-        let excited: Vec<u32> = experiment
-            .excited_flyids
-            .iter()
-            .map(|flyid| {
-                self.completeness.idx_of(*flyid).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        format!(
-                            "flyid {flyid} (experiment {}) not in roster",
-                            experiment.name
-                        ),
-                    )
-                })
-            })
-            .collect::<io::Result<_>>()?;
+
+        let excited = self.resolve_indices(experiment.excited_flyids, experiment.name)?;
         net.add_input(PoissonInput::new(
             excited,
             experiment.stim_rate_hz,
             &self.params,
             seed,
         ));
+
+        if !experiment.excited2_flyids.is_empty() {
+            let excited2 = self.resolve_indices(experiment.excited2_flyids, experiment.name)?;
+            net.add_input(PoissonInput::new(
+                excited2,
+                experiment.stim_rate2_hz,
+                &self.params,
+                seed.wrapping_add(1),
+            ));
+        }
         Ok(net)
+    }
+}
+
+/// Copy `weight`, zeroing every edge whose presynaptic neuron is in `silenced`.
+/// Matches `model.py:111-127` (`syn.w['i == pre'] = 0`), which removes a
+/// neuron's outgoing influence without touching its own dynamics.
+fn silence_outgoing(pre: &[u32], weight: &[f64], silenced: &[u32], n: usize) -> Vec<f64> {
+    let mut mask = vec![false; n];
+    for &i in silenced {
+        mask[i as usize] = true;
+    }
+    pre.iter()
+        .zip(weight)
+        .map(|(&p, &w)| if mask[p as usize] { 0.0 } else { w })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::silence_outgoing;
+
+    #[test]
+    fn silencing_zeroes_only_outgoing_edges() {
+        // Edges 0->1 (1.0), 0->2 (2.0), 1->2 (3.0), 2->0 (4.0).
+        let pre = [0u32, 0, 1, 2];
+        let w = [1.0f64, 2.0, 3.0, 4.0];
+        // Silencing neuron 0 zeroes its outgoing edges only.
+        assert_eq!(
+            silence_outgoing(&pre, &w, &[0], 3),
+            vec![0.0, 0.0, 3.0, 4.0]
+        );
+        // Silencing neuron 2 zeroes only the edge it sources.
+        assert_eq!(
+            silence_outgoing(&pre, &w, &[2], 3),
+            vec![1.0, 2.0, 3.0, 0.0]
+        );
+        // No silencing is a faithful copy.
+        assert_eq!(silence_outgoing(&pre, &w, &[], 3), w.to_vec());
     }
 }

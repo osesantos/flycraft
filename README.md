@@ -73,28 +73,39 @@ wires it straight into the M1 engine:
 |--------|----------------|
 | `connectome::completeness` | `2025_Completeness_783.csv` → the 138,639-neuron roster and flyid↔index mapping |
 | `connectome::connectivity` | `2025_Connectivity_783.parquet` → 15,091,983 signed, weighted edges (`Excitatory x Connectivity x w_syn`) |
-| `connectome::experiment` | Stimulus definitions (`SUGAR`, `P9`) and their target flyids |
+| `connectome::experiment` | Stimulus definitions (`SUGAR`, `P9`, `SUGAR_AND_P9`) and their target flyids |
 
 Both data files live in `data/` (git-ignored; copy them from
 [fly-brain](../fly-brain)'s `data/` directory). The parquet is read natively through
 `arrow`/`parquet` — no Python — with weights taken as `Excitatory x Connectivity *
 w_syn` and indices mapped by CSV row order, exactly as the reference does.
 
+Each `Experiment` mirrors the reference's full stimulus vocabulary
+(`model.py:61-127`): `neu_exc` neurons are Poisson-driven at `stim_rate_hz`
+(`r_poi`), `neu_exc2` at a second rate (`r_poi2`), and `neu_slnc` neurons have every
+outgoing synapse weight zeroed — silencing a neuron's *influence*, not its own
+spiking. So arbitrary sensory groups can be prodded without touching the engine.
+
 ### Validation
 
 The `sugar` experiment (21 gustatory-receptor neurons driven at 200 Hz) is checked
-against fly-brain's run manifest:
+against fly-brain's run manifest, and the other stimulus channels against a Brian2
+oracle run locally with matching configs:
 
 | Quantity (t = 0.1 s) | FlyCraft | Reference |
 |----------------------|----------|-----------|
-| Spikes (seed 42) | 1551 | 1462–1574 (mean 1534) |
-| Spikes (10-seed mean) | 1532 | 1534 |
-| Active neurons (10-seed mean) | 324 | 323 |
+| sugar, spikes (seed 42) | 1551 | 1462–1574 (mean 1534) |
+| sugar, spikes (10-seed mean) | 1532 | 1534 |
+| sugar, active neurons (10-seed mean) | 324 | 323 |
+| sugar + P9 (`neu_exc2`), spikes (5-seed mean) | 1617 | 1616 (oracle) |
+| P9, spikes (5-seed mean) | 59 | 72 (oracle, range 24–195) |
+| P9 silenced (`neu_slnc`), spikes / active | 21 / 2 | 17 / 2 (oracle) |
 
 At t = 1 s FlyCraft produces 17,101 spikes against the reference oracle's 17,034
 (0.4%). Two subtleties of Brian2's step ordering were needed for parity: delayed
 events are delivered *after* the state update, and events landing on a spiking or
-refractory neuron are discarded.
+refractory neuron are discarded. P9 is a small, high-variance cascade (the oracle
+itself spans 24–195 spikes), so it is validated on a seed mean rather than one run.
 
 ## Roadmap
 
